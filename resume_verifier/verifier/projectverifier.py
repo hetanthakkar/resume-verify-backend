@@ -135,7 +135,7 @@ class ProjectVerifier:
                     1 = Perfect match with verifiable implementation details"""
 
             request_payload = {
-                "model": "claude-3-5-sonnet-20241022",
+                "model": "claude-3-5-haiku-latest",
                 "max_tokens": 1024,
                 "messages": [{"role": "user", "content": prompt}],
             }
