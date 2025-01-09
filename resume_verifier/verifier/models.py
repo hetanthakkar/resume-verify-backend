@@ -1,6 +1,9 @@
 from django.db import models
 
 
+import uuid
+
+
 class Project(models.Model):
     name = str
     description = str
@@ -31,3 +34,18 @@ class VerificationResultSerializer(serializers.ModelSerializer):
     class Meta:
         model = VerificationResult
         fields = "__all__"
+
+
+class ProfileMatchResult(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    pdf_url = models.URLField()
+    linkedin_url = models.URLField()
+    results = models.JSONField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Profile Match {self.id}"
