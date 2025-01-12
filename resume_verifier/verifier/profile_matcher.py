@@ -13,6 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 import asyncio
 import aiohttp
 import numpy as np
+from .linkedinExtractor import EnhancedLinkedInExtractor
 
 
 class ProfileMatcher:
@@ -840,7 +841,12 @@ class ProfileMatcher:
     def process_profiles(self, pdf_path: str, linkedin_data: Dict) -> Dict:
         """Main method to process and compare profiles."""
         # Extract text from PDF
-        resume_text = self.extract_text_from_pdf(pdf_path)
+        openai_api_key = "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"
+
+        extractor = EnhancedLinkedInExtractor()
+        print("pdf path", pdf_path)
+        resume_text = extractor.extract_text_from_pdf(pdf_path)
+        # resume_text = self.extract_text_from_pdf(pdf_path)
         if not resume_text:
             raise ValueError("Could not extract text from PDF")
 

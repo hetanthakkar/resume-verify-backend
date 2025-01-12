@@ -1,3 +1,4 @@
+from datetime import timedelta
 from pathlib import Path
 import os
 
@@ -53,13 +54,13 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = "resume_verifier.wsgi.application"
-
 DATABASES = {
     "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "db.sqlite3",
+        "ENGINE": "django.db.backends.postgresql",
+        "NAME": "resume_verifier",
     }
 }
+
 
 AUTH_PASSWORD_VALIDATORS = [
     {
@@ -91,3 +92,17 @@ MEDIA_ROOT = os.path.join(BASE_DIR, "media")
 # API Keys
 OPENAI_API_KEY = "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"
 GITHUB_TOKEN = "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"
+API_HUB_KEY = "ec2fc77d-4dc8-4939-8d11-96854f75a6c3"
+AUTH_USER_MODEL = "verifier.Recruiter"
+REST_FRAMEWORK = {
+    "DEFAULT_AUTHENTICATION_CLASSES": (
+        "rest_framework_simplejwt.authentication.JWTAuthentication",
+    ),
+}
+
+CLAUDE_API_KEY = "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"
+SIMPLE_JWT = {
+    "ACCESS_TOKEN_LIFETIME": timedelta(hours=1),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=1),
+}
+APPEND_SLASH = False

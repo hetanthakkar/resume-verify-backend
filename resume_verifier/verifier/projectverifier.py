@@ -8,7 +8,6 @@ from enum import Enum
 import tiktoken
 from functools import lru_cache
 from .Scrapping import Scrapper
-from .ContentProcessor import ContentProcessor
 
 
 class UrlType(Enum):
@@ -27,30 +26,53 @@ class ProjectVerificationResult:
     error: Optional[str] = None
     repository_stats: Optional[Dict] = None
     app_info: Optional[Dict] = None
+    match_justification: Optional[str] = None  # New field for justification
 
     def create_structured_output(self) -> Dict[str, Dict]:
+        """Create structured output with summary and detailed views."""
         project_summary = {
             "type": self.url_type.value,
-            "match_score": round(self.similarity_score * 10, 2),
+            "match_score": round(float(self.similarity_score) * 10, 2),
             "status": "Verified" if self.similarity_score >= 0.7 else "Needs Review",
+            "match_justification": (
+                str(self.match_justification)
+                if self.match_justification
+                else "No justification provided"
+            ),
         }
 
         project_detailed = {
             "type": self.url_type.value,
-            "match_score": round(self.similarity_score * 10, 2),
+            "match_score": round(float(self.similarity_score) * 10, 2),
             "content_preview": (
-                self.content_matched[:500] + "..."
-                if len(self.content_matched) > 500
-                else self.content_matched
+                str(self.content_matched)[:500] + "..."
+                if len(str(self.content_matched)) > 500
+                else str(self.content_matched)
             ),
             "error": self.error,
+            "match_justification": (
+                str(self.match_justification)
+                if self.match_justification
+                else "No justification provided"
+            ),
         }
 
         if self.repository_stats:
-            project_detailed["repository_statistics"] = self.repository_stats
+            github_stats = {
+                "languages": self.repository_stats.get("languages", {}),
+                "total_commits": self.repository_stats.get("total_commits", 0),
+                "stars": self.repository_stats.get("stars", 0),
+                "forks": self.repository_stats.get("forks", 0),
+            }
+            project_detailed["repository_statistics"] = github_stats
             project_summary["repository_activity"] = (
-                "Active" if self.repository_stats.get("commits", 0) > 0 else "Inactive"
+                "Active" if github_stats["total_commits"] > 0 else "Inactive"
             )
+            project_summary["github_highlights"] = {
+                "primary_language": next(iter(github_stats["languages"].keys()), "N/A"),
+                "total_commits": github_stats["total_commits"],
+                "stars": github_stats["stars"],
+            }
 
         if self.app_info:
             project_detailed["app_information"] = self.app_info
@@ -82,7 +104,6 @@ class ProjectVerifier:
         self.session = None
         self.encoding = tiktoken.encoding_for_model("gpt-4")
         self.setup_logging()
-        self.processor = ContentProcessor()
 
     def setup_logging(self):
         logging.basicConfig(
@@ -151,7 +172,7 @@ class ProjectVerifier:
         web_content: str,
         url_type: UrlType,
         repo_data: Optional[Dict] = None,
-    ) -> float:
+    ) -> tuple[float, str]:  # Modified to return both score and justification
         try:
             web_content = self.truncate_content(web_content)
 
@@ -174,12 +195,23 @@ class ProjectVerifier:
 
                 result = await response.json()
                 content = result["content"][0]["text"]
-                match = re.search(r"\d+(\.\d+)?", content)
-                return float(match.group()) if match else 0.0
+
+                # Extract score and justification
+                score_match = re.search(r"Score: (\d+(\.\d+)?)", content)
+                justification_match = re.search(r"Justification: (.+)(?:\n|$)", content)
+
+                score = float(score_match.group(1)) if score_match else 0.0
+                justification = (
+                    justification_match.group(1)
+                    if justification_match
+                    else "No justification provided"
+                )
+
+                return score, justification
 
         except Exception as e:
             self.logger.error(f"Error in similarity check: {str(e)}")
-            return 0.0
+            return 0.0, "Error occurred during similarity check"
 
     def _generate_prompt(
         self,
@@ -202,20 +234,25 @@ class ProjectVerifier:
                 1. Do the technologies mentioned/used match the description?
                 2. Does the README describe similar functionality?
 
-                Return only a similarity score 0-1:
-                0 = No technology/implementation match
-                0.5 = Some technology overlap but different implementation
-                1 = Strong technology and implementation match"""
+                Return in this exact format:
+                Score: [0-1]
+                Justification: [One line explaining what matched/didn't match]
+
+                Example:
+                Score: 0.8
+                Justification: Strong tech stack match (React/Node.js) but missing some described ML features"""
 
         return f"""Compare the following project description with the content and determine authenticity.
             Description: {resume_description}
             Content: {web_content}
 
-            Return only a similarity score between 0 and 1:
-            0 = No match or likely false claim
-            0.3 = Some general similarities but lacks specific details
-            0.7 = Strong match with specific technical details
-            1 = Perfect match with verifiable implementation details"""
+            Return in this exact format:
+            Score: [0-1]
+            Justification: [One line explaining what matched/didn't match]
+
+            Example:
+            Score: 0.7
+            Justification: Core functionality matches but deployment details differ"""
 
     async def verify_project(
         self, url: str, resume_description: str
@@ -228,6 +265,7 @@ class ProjectVerifier:
                 content_matched="",
                 url_type=UrlType.INVALID,
                 error="Invalid URL format",
+                match_justification="Invalid URL provided",
             )
 
         try:
@@ -250,21 +288,23 @@ class ProjectVerifier:
                 repo_data = await scraper.fetch_github_content(url)
                 content = repo_data["content"]
 
-                similarity_score = await self.check_similarity(
-                    resume_description, content, url_type, repo_data
+                similarity_score, justification = (
+                    await self.check_similarity(  # Unpack both values
+                        resume_description, content, url_type, repo_data
+                    )
                 )
                 return ProjectVerificationResult(
                     similarity_score=similarity_score,
                     content_matched=content[:1000],
                     url_type=url_type,
                     repository_stats={"languages": repo_data["languages"]},
+                    match_justification=justification,  # Pass the justification
                 )
 
             # Handle app stores and general web content
             result = await self._fetch_content(url_type, url, scraper)
             content, app_info = result["content"], result.get("app_info")
 
-            print(content, "content is here")
             if not content:
                 return ProjectVerificationResult(
                     similarity_score=0.0,
@@ -272,10 +312,13 @@ class ProjectVerifier:
                     url_type=url_type,
                     error="No content found",
                     app_info=app_info,
+                    match_justification="No content could be extracted from URL",
                 )
 
-            similarity_score = await self.check_similarity(
-                resume_description, content, url_type, repo_data
+            similarity_score, justification = (
+                await self.check_similarity(  # Unpack both values
+                    resume_description, content, url_type, repo_data
+                )
             )
 
             return ProjectVerificationResult(
@@ -283,6 +326,7 @@ class ProjectVerifier:
                 content_matched=content[:1000],
                 url_type=url_type,
                 app_info=app_info,
+                match_justification=justification,  # Pass the justification
             )
 
         except Exception as e:
@@ -293,6 +337,7 @@ class ProjectVerifier:
                 url_type=url_type,
                 error=str(e),
                 app_info=app_info,
+                match_justification=f"Error occurred: {str(e)}",
             )
 
     async def _fetch_content(
