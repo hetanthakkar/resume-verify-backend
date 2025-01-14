@@ -236,7 +236,7 @@ class Scrapper:
                 try:
                     # Navigate to the page
                     response = await page.goto(
-                        url, wait_until="networkidle", timeout=30000
+                        url, wait_until="networkidle", timeout=5000
                     )
 
                     if not response:

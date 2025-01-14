@@ -9,6 +9,9 @@ from django.core.exceptions import ValidationError
 from django.conf import settings
 from django.contrib.postgres.fields import ArrayField
 import json
+from django.conf import settings
+import random
+from datetime import datetime, timedelta
 
 
 class RecruiterManager(BaseUserManager):
@@ -45,6 +48,25 @@ class Recruiter(AbstractUser):
         return f"{self.name} - {self.company}"
 
 
+class OTPVerification(models.Model):
+    email = models.EmailField()
+    otp = models.CharField(max_length=6)
+    created_at = models.DateTimeField(auto_now_add=True)
+    is_verified = models.BooleanField(default=False)
+    registration_data = models.JSONField(default=dict)
+
+    @classmethod
+    def generate_otp(cls, email):
+        cls.objects.filter(email=email).delete()
+        otp = "".join([str(random.randint(0, 9)) for _ in range(6)])
+        return cls.objects.create(email=email, otp=otp)
+
+    def is_valid(self):
+        return datetime.now() - timedelta(minutes=10) <= self.created_at.replace(
+            tzinfo=None
+        )
+
+
 class Job(models.Model):
     title = models.CharField(max_length=255)
     company_name = models.CharField(max_length=255)
@@ -62,21 +84,21 @@ class Job(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
-    def save(self, *args, **kwargs):
-        # Ensure required_skills and preferred_skills are lists
-        if self.required_skills is None:
-            self.required_skills = []
-        if self.preferred_skills is None:
-            self.preferred_skills = []
+    # def save(self, *args, **kwargs):
+    #     # Ensure required_skills and preferred_skills are lists
+    #     if self.required_skills is None:
+    #         self.required_skills = []
+    #     if self.preferred_skills is None:
+    #         self.preferred_skills = []
 
-        # Convert years_of_experience to int if it's a string
-        if (
-            isinstance(self.years_of_experience, str)
-            and self.years_of_experience.isdigit()
-        ):
-            self.years_of_experience = int(self.years_of_experience)
+    #     # Convert years_of_experience to int if it's a string
+    #     if (
+    #         isinstance(self.years_of_experience, str)
+    #         and self.years_of_experience.isdigit()
+    #     ):
+    #         self.years_of_experience = int(self.years_of_experience)
 
-        super().save(*args, **kwargs)
+    #     super().save(*args, **kwargs)
 
 
 class JobRecruiter(models.Model):
@@ -103,10 +125,6 @@ class JobRecruiter(models.Model):
         indexes = [
             models.Index(fields=["job", "recruiter", "status"]),
         ]
-
-    def save(self, *args, **kwargs):
-        self.full_clean()
-        super().save(*args, **kwargs)
 
 
 class Candidate(models.Model):
@@ -149,6 +167,15 @@ class ResumeAnalysis(models.Model):
     linkedin_url = models.URLField(blank=True, null=True)
     analysis_data = models.JSONField()
     analyzed_at = models.DateTimeField(auto_now_add=True)
+    uploaded_by = models.ForeignKey(
+        Recruiter,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name="uploaded_analyses",
+    )
+    candidate_id = models.ForeignKey(
+        Candidate, on_delete=models.CASCADE, related_name="analyses"
+    )
 
     class Meta:
         unique_together = ["resume", "job"]
@@ -169,6 +196,3 @@ class Shortlist(models.Model):
         "Recruiter", on_delete=models.CASCADE, db_column="shortlisted_by"
     )
     shortlisted_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        db_table = "shortlist"

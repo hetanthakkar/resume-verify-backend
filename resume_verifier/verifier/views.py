@@ -10,6 +10,7 @@ from django.core.files.uploadedfile import InMemoryUploadedFile
 from django.db import models, transaction
 from django.http import Http404, HttpRequest
 from django.shortcuts import get_object_or_404, render
+from django.core.mail import send_mail
 
 # Third-party async/sync utilities
 import aiohttp
@@ -34,7 +35,11 @@ from .models import (
     Resume,
     ResumeAnalysis,
     Shortlist,
+    OTPVerification,
+    Recruiter,
 )
+from rest_framework_simplejwt.tokens import RefreshToken, TokenError
+
 from .profile_matcher import ProfileMatcher
 from .projectverifier import ProjectVerifier
 from .resume_extractor import ResumeProjectExtractor
@@ -46,6 +51,12 @@ from .serializers import (
     RegisterSerializer,
     ResumeVersionSerializer,
     ShortlistSerializer,
+    VerifyOTPSerializer,
+    ForgotPasswordSerializer,
+    ResetPasswordSerializer,
+    RecruiterEmailUpdateRequestSerializer,
+    RecruiterEmailUpdateConfirmSerializer,
+    RecruiterProfileUpdateSerializer,
 )
 
 
@@ -194,7 +205,6 @@ class ProfileMatchView(APIView):
 
     async def _async_post(self, request):
         try:
-            # Validate input
             if "pdf_file" not in request.FILES:
                 return Response(
                     {"error": "No PDF file provided"},
@@ -202,14 +212,11 @@ class ProfileMatchView(APIView):
                 )
 
             pdf_file = request.FILES["pdf_file"]
-
-            # Initialize LinkedIn extractor and matcher
             linkedin_extractor = EnhancedLinkedInExtractor()
             matcher = ProfileMatcher(
                 "sk-3ieS4zm3RDbTv9bKm7_PuvcRPjfaFhhoSJ6lJ6VdRmT3BlbkFJMCh_LyeVG1zGzvilyHhibyl3TfLVlhX8CBTlyu1VIA"
             )
 
-            # Extract text from PDF
             resume_text = linkedin_extractor.extract_text_from_pdf(pdf_file)
             if not resume_text:
                 return Response(
@@ -217,28 +224,23 @@ class ProfileMatchView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            # Extract LinkedIn info from resume text
-            linkedin_info = linkedin_extractor.extract_linkedin_info(resume_text)
-
-            if not linkedin_info:
+            linkedin_response = await linkedin_extractor.extract_linkedin_info(
+                resume_text
+            )
+            if not linkedin_response:
                 return Response(
                     {"error": "No LinkedIn profile information found in resume"},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            username, linkedin_url = linkedin_info
-
-            # Fetch LinkedIn data
+            username, linkedin_url = linkedin_response
+            print("My results", username, linkedin_url)
             linkedin_data = await linkedin_extractor.fetch_linkedin_data(username)
-
-            # Process profiles
-            async def run_sync_compare():
-                loop = asyncio.get_event_loop()
-                return await loop.run_in_executor(
-                    None, matcher.process_profiles, pdf_file, linkedin_data
-                )
-
-            results = await run_sync_compare()
+            print("My results1", linkedin_data)
+            loop = asyncio.get_event_loop()
+            results = await loop.run_in_executor(
+                None, matcher.process_profiles, pdf_file, linkedin_data
+            )
 
             return Response(
                 {"linkedin_url": linkedin_url, "results": results},
@@ -270,8 +272,7 @@ class CombinedVerificationView(APIView):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
-    async def extract_email(self, text):
-        print("enterred")
+    async def extract_email_and_name(self, text):
         try:
             headers = {
                 "x-api-key": settings.CLAUDE_API_KEY,
@@ -279,7 +280,11 @@ class CombinedVerificationView(APIView):
                 "anthropic-version": "2023-06-01",
             }
 
-            prompt = f"""Given this resume text, find and return ONLY the email address. Return just the email, nothing else:
+            prompt = f"""Given this resume text, find and return ONLY the full name and email address in the following format:
+            NAME: <full name>
+            EMAIL: <email>
+
+            Resume text:
             {text}"""
 
             payload = {
@@ -296,19 +301,26 @@ class CombinedVerificationView(APIView):
                     json=payload,
                 ) as response:
                     if response.status != 200:
-                        return None
+                        return None, None
 
                     result = await response.json()
-                    email = result["content"][0]["text"].strip()
+                    response_text = result["content"][0]["text"].strip()
 
-                    # Validate email format
-                    if re.match(r"[^@]+@[^@]+\.[^@]+", email):
-                        return email
-                    return None
+                    # Extract name and email from response
+                    name_match = re.search(r"NAME:\s*(.+)", response_text)
+                    email_match = re.search(r"EMAIL:\s*(.+)", response_text)
+
+                    name = name_match.group(1).strip() if name_match else None
+                    email = email_match.group(1).strip() if email_match else None
+
+                    if email and not re.match(r"[^@]+@[^@]+\.[^@]+", email):
+                        email = None
+
+                    return name, email
 
         except Exception as e:
-            print(f"Error extracting email: {e}")
-            return None
+            print(f"Error extracting email and name: {e}")
+            return None, None
 
     async def create_memory_file(self, original_file):
         """Create a new memory file from the original file content."""
@@ -367,13 +379,14 @@ class CombinedVerificationView(APIView):
                     {"error": "Failed to extract text from resume"},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
-
+            # print("extracted resume text", resume_text)
             # Extract LinkedIn URL
-            linkedin_info = linkedin_extractor.extract_linkedin_info(resume_text)
+            linkedin_info = await linkedin_extractor.extract_linkedin_info(resume_text)
+            # print("extracted linkedin info", linkedin_info)
             linkedin_url = linkedin_info[1] if linkedin_info else None
 
             # Extract email
-            email = await self.extract_email(resume_text)
+            name, email = await self.extract_email_and_name(resume_text)
             if not email:
                 return Response(
                     {"error": "Could not find email in resume"},
@@ -385,7 +398,7 @@ class CombinedVerificationView(APIView):
                 candidate = await sync_to_async(Candidate.objects.get)(email=email)
             except Candidate.DoesNotExist:
                 candidate = await sync_to_async(Candidate.objects.create)(
-                    email=email, name=request.data.get("name", "")
+                    email=email, name=name
                 )
 
             # Get job
@@ -462,6 +475,8 @@ class CombinedVerificationView(APIView):
                 job=job,
                 linkedin_url=linkedin_url,
                 analysis_data=analysis_data,
+                uploaded_by=request.user,
+                candidate_id=candidate,
             )
 
             return Response(
@@ -482,20 +497,179 @@ class CombinedVerificationView(APIView):
 
 
 class RegisterView(APIView):
-    def post(self, request: HttpRequest) -> Response:
+    def post(self, request):
         serializer = RegisterSerializer(data=request.data)
         if serializer.is_valid():
-            user = serializer.save()
-            refresh = RefreshToken.for_user(user)
+            serializer.save()
             return Response(
-                {
-                    "refresh": str(refresh),
-                    "access": str(refresh.access_token),
-                    "user": RecruiterSerializer(user).data,
-                },
-                status=status.HTTP_201_CREATED,
+                {"message": "Please verify your email with the OTP sent"},
+                status=status.HTTP_200_OK,
             )
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class RecentAnalysisView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        try:
+            analyses = (
+                ResumeAnalysis.objects.filter(uploaded_by=request.user)
+                .select_related("resume", "job", "resume__candidate")
+                .order_by("-analyzed_at")[:10]
+            )
+
+            return Response(
+                [
+                    {
+                        "id": analysis.id,
+                        "job_id": analysis.job.id,
+                        "job_title": analysis.job.title,
+                        "candidate_name": analysis.resume.candidate.name,
+                        "candidate_email": analysis.resume.candidate.email,
+                        "analysis_data": analysis.analysis_data,
+                        "analyzed_at": analysis.analyzed_at,
+                        "resume_id": analysis.resume.id,
+                    }
+                    for analysis in analyses
+                ]
+            )
+        except Exception as e:
+            return Response(
+                {"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class JobAnalysisView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, job_id):
+        try:
+            analyses = (
+                ResumeAnalysis.objects.filter(
+                    uploaded_by_id=request.user.id, job_id=job_id
+                )
+                .select_related("resume", "job", "resume__candidate")
+                .order_by("-analyzed_at")[:10]
+            )
+
+            return Response(
+                [
+                    {
+                        "id": analysis.id,
+                        "candidate_name": analysis.resume.candidate.name,
+                        "candidate_email": analysis.resume.candidate.email,
+                        "analysis_data": analysis.analysis_data,
+                        "analyzed_at": analysis.analyzed_at,
+                        "resume_id": analysis.resume.id,
+                    }
+                    for analysis in analyses
+                ]
+            )
+        except Exception as e:
+            return Response(
+                {"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class CheckEmailRegisteredView(APIView):
+    def post(self, request):
+        email = request.data.get("email")
+
+        if not email:
+            return Response(
+                {"error": "Email field is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if Recruiter.objects.filter(email=email).exists():
+            return Response(
+                {"message": "Email is registered."},
+                status=status.HTTP_200_OK,
+            )
+
+        return Response(
+            {"message": "Email is not registered."},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+
+class RefreshTokenView(APIView):
+    """
+    This endpoint allows users to refresh their access token using a valid refresh token.
+    """
+
+    def post(self, request):
+        refresh_token = request.data.get("refresh")
+
+        if not refresh_token:
+            return Response(
+                {"error": "Refresh token is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            # Decode and validate the refresh token
+            refresh = RefreshToken(refresh_token)
+
+            # Create a new access token from the refresh token
+            new_access_token = str(refresh.access_token)
+
+            return Response(
+                {"access": new_access_token},
+                status=status.HTTP_200_OK,
+            )
+        except Exception as e:
+            return Response(
+                {"error": "Invalid or expired refresh token."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+
+class VerifyOTPView(APIView):
+    def post(self, request):
+        serializer = VerifyOTPSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            verification = OTPVerification.objects.get(
+                email=serializer.validated_data["email"],
+                otp=serializer.validated_data["otp"],
+                is_verified=False,
+            )
+
+            if not verification.is_valid():
+                return Response(
+                    {"error": "OTP has expired"}, status=status.HTTP_400_BAD_REQUEST
+                )
+
+            register_serializer = RegisterSerializer(
+                data=verification.registration_data, context={"registration_data": True}
+            )
+
+            if register_serializer.is_valid():
+                user = register_serializer.save()
+                verification.is_verified = True
+                verification.save()
+
+                refresh = RefreshToken.for_user(user)
+                return Response(
+                    {
+                        "refresh": str(refresh),
+                        "access": str(refresh.access_token),
+                        "user": RecruiterSerializer(user).data,
+                    },
+                    status=status.HTTP_201_CREATED,
+                )
+            return Response(
+                register_serializer.errors, status=status.HTTP_400_BAD_REQUEST
+            )
+
+        except OTPVerification.DoesNotExist:
+            return Response(
+                {"error": "Invalid OTP"}, status=status.HTTP_400_BAD_REQUEST
+            )
 
 
 class LoginView(APIView):
@@ -619,6 +793,27 @@ class JobViewSet(viewsets.ModelViewSet):
 
         return obj
 
+    def update(self, request, *args, **kwargs):
+        """
+        Update an existing job
+        Endpoint: PUT /api/jobs/{id}/
+        """
+        partial = kwargs.pop("partial", False)
+        instance = self.get_object()
+
+        # Ensure that only the job creator can update the job
+        if instance.created_by != request.user:
+            return Response(
+                {"error": "You do not have permission to update this job"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
     def create(self, request, *args, **kwargs):
         """
         Create a job from LinkedIn URL
@@ -630,11 +825,8 @@ class JobViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        print(request.user)
         # Initialize job parser
-
         job_parser = JobParser(user=request.user)
-
         # Use async_to_sync to handle the async operation
         results = async_to_sync(job_parser.analyze_jobs)(urls=[linkedin_url])
 
@@ -645,13 +837,12 @@ class JobViewSet(viewsets.ModelViewSet):
             )
 
         job_data = results[0]["data"]
-
         # Transform the parsed data to match your Job model fields
         job_create_data = {
-            "company_name": job_data["company"]["name"],  # Accessing nested key
-            "description": job_data["job_description"],  # Directly accessing key
-            "source_url": linkedin_url,  # A variable containing the LinkedIn URL
-            **job_data,  # This unpacks and includes all keys/values from job_data
+            "company_name": job_data["company"]["name"],
+            "description": job_data["job_description"],
+            "source_url": linkedin_url,
+            **job_data,
         }
 
         # Use your existing serializer to create the job
@@ -659,11 +850,8 @@ class JobViewSet(viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
         job = serializer.save(created_by=request.user)
         JobRecruiter.objects.create(job=job, recruiter=request.user, status="ACTIVE")
-        headers = self.get_success_headers(serializer.data)
-        return Response(
-            serializer.data, status=status.HTTP_201_CREATED, headers=headers
-        )
 
+        # Only one response block
         headers = self.get_success_headers(serializer.data)
         return Response(
             serializer.data, status=status.HTTP_201_CREATED, headers=headers
@@ -698,7 +886,7 @@ class ShortlistViewSet(viewsets.ViewSet):
     def get_job(self, job_id):
         """Helper method to get job and verify access"""
         has_access = JobRecruiter.objects.filter(
-            recruiter_id=self.request.user.id, job_id=job_id, status="ACTIVE"
+            recruiter_id=self.request.user.id, job_id=job_id
         ).exists()
 
         if not has_access:
@@ -773,6 +961,7 @@ class CandidateDetailView(generics.RetrieveAPIView):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = CandidateSerializer
     queryset = Candidate.objects.all()
+    lookup_field = "id"
 
     def get(self, request, *args, **kwargs):
         try:
@@ -804,4 +993,194 @@ class CandidateResumesView(generics.ListAPIView):
         except Exception as e:
             return Response(
                 {"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class ResumeDetailView(generics.RetrieveAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = ResumeVersionSerializer
+    queryset = Resume.objects.all()
+    lookup_field = "id"
+
+    def get(self, request, *args, **kwargs):
+        try:
+            resume = self.get_object()
+            serializer = self.get_serializer(resume)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response(
+                {"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class ForgotPasswordView(APIView):
+    def post(self, request):
+        serializer = ForgotPasswordSerializer(data=request.data)
+        if serializer.is_valid():
+            email = serializer.validated_data["email"]
+            try:
+                recruiter = Recruiter.objects.get(email=email)
+                verification = OTPVerification.generate_otp(email)
+
+                # Send password reset email
+                send_mail(
+                    "Password Reset Code",
+                    f"Your password reset code is: {verification.otp}",
+                    settings.EMAIL_FROM_ADDRESS,
+                    [email],
+                    fail_silently=False,
+                )
+
+                return Response(
+                    {"message": "Password reset code has been sent to your email"},
+                    status=status.HTTP_200_OK,
+                )
+            except Recruiter.DoesNotExist:
+                # For security reasons, still return success even if email doesn't exist
+                return Response(
+                    {
+                        "message": "If an account exists with this email, a password reset code has been sent"
+                    },
+                    status=status.HTTP_200_OK,
+                )
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class ResetPasswordView(APIView):
+    def post(self, request):
+        serializer = ResetPasswordSerializer(data=request.data)
+        if serializer.is_valid():
+            email = serializer.validated_data["email"]
+            new_password = serializer.validated_data["new_password"]
+
+            try:
+                verification = OTPVerification.objects.get(
+                    email=email, otp=serializer.validated_data["otp"], is_verified=False
+                )
+
+                recruiter = Recruiter.objects.get(email=email)
+                recruiter.set_password(new_password)
+                recruiter.save()
+
+                # Mark OTP as verified
+                verification.is_verified = True
+                verification.save()
+
+                return Response(
+                    {"message": "Password has been reset successfully"},
+                    status=status.HTTP_200_OK,
+                )
+            except (OTPVerification.DoesNotExist, Recruiter.DoesNotExist):
+                return Response(
+                    {"message": "Invalid reset attempt"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class RecruiterProfileUpdateView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def put(self, request):
+        serializer = RecruiterProfileUpdateSerializer(
+            request.user, data=request.data, partial=True
+        )
+
+        if serializer.is_valid():
+            serializer.save()
+            return Response(
+                {"message": "Profile updated successfully", "data": serializer.data}
+            )
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class RecruiterEmailUpdateRequestView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+
+        serializer = RecruiterEmailUpdateRequestSerializer(data=request.data)
+        if serializer.is_valid():
+            new_email = serializer.validated_data["new_email"]
+            # Generate and send OTP
+            verification = OTPVerification.generate_otp(new_email)
+
+            # Send email with OTP
+            send_mail(
+                "Email Change Verification",
+                f"Your verification code to change your email is: {verification.otp}",
+                settings.EMAIL_FROM_ADDRESS,
+                [new_email],
+                fail_silently=False,
+            )
+
+            return Response(
+                {
+                    "message": "Verification code sent to new email address",
+                    "new_email": new_email,
+                }
+            )
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class RecruiterEmailUpdateConfirmView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = RecruiterEmailUpdateConfirmSerializer(data=request.data)
+        if serializer.is_valid():
+            new_email = serializer.validated_data["new_email"]
+
+            # Verify OTP
+            verification = OTPVerification.objects.get(
+                email=new_email, otp=serializer.validated_data["otp"], is_verified=False
+            )
+
+            # Update email
+            request.user.email = new_email
+            request.user.save()
+
+            # Mark OTP as verified
+            verification.is_verified = True
+            verification.save()
+
+            return Response(
+                {"message": "Email updated successfully", "email": new_email}
+            )
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class LogoutView(APIView):
+    """
+    Logout endpoint that blacklists the refresh token to prevent reuse.
+    Requires a refresh token in the request body.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        try:
+            refresh_token = request.data.get("refresh")
+            if not refresh_token:
+                return Response(
+                    {"error": "Refresh token is required."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            # Get token and blacklist it
+            token = RefreshToken(refresh_token)
+            token.blacklist()
+
+            return Response(
+                {"message": "Successfully logged out."}, status=status.HTTP_200_OK
+            )
+        except TokenError:
+            return Response(
+                {"error": "Invalid or expired refresh token."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except Exception as e:
+            return Response(
+                {"error": "Failed to logout."}, status=status.HTTP_400_BAD_REQUEST
             )

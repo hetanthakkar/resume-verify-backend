@@ -83,41 +83,57 @@ class EnhancedLinkedInExtractor:
 
         return text.strip()
 
-    def extract_linkedin_info(self, text: str) -> Optional[Tuple[str, str]]:
-        print("text is", text)
-        """
-        Extract LinkedIn username or full URL using multiple patterns.
-        Returns tuple of (username, full_url) or None if not found.
-        """
-        patterns = [
-            r"linkedin\.com/in/([\w\-%.]+)/?",  # Standard profile URL
-            r"linkedin\.com/pub/([\w\-%.]+)/?",  # Public profile URL
-            r"linkedin\.com/profile/view\?id=([\w\-%.]+)",  # Profile view URL
-            r"linkedin:?\s*(?:profile)?:?\s*([\w\-%.]+)",  # LinkedIn username
-            r"(?:profile|connect).*linkedin\.com/(?:in|pub)/([\w\-%.]+)",  # Profile with context
-            r"(?i)linkedin:?\s*(?:profile)?:?\s*([\w\-%.]+)",  # Case-insensitive username
-            r"(?i)/?(?:in|pub)/([\w\-%.]+)",  # Short format
-            r"@([\w\-%.]+)\s+(?:on\s+)?linkedin",  # @ format
-            r"linkedin(?:.com)?[/\s]+(?:profile|in|pub)?[/\s]*([\w\-%.]+)",  # Generic format
-        ]
+    async def extract_linkedin_info(self, text: str) -> Optional[Tuple[str, str]]:
+        try:
+            headers = {
+                "x-api-key": "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",
+                "content-type": "application/json",
+                "anthropic-version": "2023-06-01",
+            }
 
-        # Split text into lines to process embedded links section separately
-        lines = text.split("\n")
-        for line in lines:
-            for pattern in patterns:
-                matches = re.finditer(pattern, line, re.IGNORECASE)
-                for match in matches:
-                    username = match.group(1)
-                    # Clean up the username
-                    username = re.sub(r"[^\w\-]", "", username)
-                    username = username.rstrip("/")
-                    username = username.split("?")[0]  # Remove URL parameters
+            prompt = f"""Find the LinkedIn profile URL in this resume text. Return ONLY the username (what comes after linkedin.com/in/) and full URL in this format:
+                USERNAME: <username>
+                URL: <full url>
+                If no valid LinkedIn URL is found, return "None".
 
-                    if self._is_valid_username(username):
-                        full_url = f"https://www.linkedin.com/in/{username}/"
+                Resume text:
+                {text}"""
+
+            payload = {
+                "model": "claude-3-haiku-20240307",
+                "max_tokens": 1024,
+                "temperature": 0,
+                "messages": [{"role": "user", "content": prompt}],
+            }
+
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    "https://api.anthropic.com/v1/messages",
+                    headers=headers,
+                    json=payload,
+                ) as response:
+                    if response.status != 200:
+                        return None
+
+                    result = await response.json()
+                    response_text = result["content"][0]["text"].strip()
+
+                    if "None" in response_text:
+                        return None
+
+                    username_match = re.search(r"USERNAME:\s*(\S+)", response_text)
+                    url_match = re.search(r"URL:\s*(https://[^\s]+)", response_text)
+
+                    if username_match and url_match:
+                        username = username_match.group(1).strip()
+                        full_url = url_match.group(1).strip()
                         return username, full_url
 
-        return None
+                    return None
+
+        except Exception as e:
+            print(f"Error extracting LinkedIn info: {e}")
+            return None
 
     def _is_valid_username(self, username: str) -> bool:
         """

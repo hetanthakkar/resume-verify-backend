@@ -26,8 +26,8 @@ class JobParser:
                 {
                     "role": "user",
                     "content": f"""Please analyze this job description and extract the following information in JSON format:
-                1. Required technical skills (as an array of strings)
-                2. Preferred/optional technical skills (as an array of strings)
+                1. Required technical skills (as an array of strings)(only Coding technologies, no soft skills or subjects/topics)
+                2. Preferred/optional technical skills (as an array of strings)(only coding technologies, no soft skills or subjects/topics)
                 3. Years of experience required (as a number, extract only the largest number mentioned for general experience)
                 4. Education requirements (as a string)
 
@@ -238,19 +238,19 @@ class JobParser:
                 years_exp = None
         print(preferred_skills, "preferred_skills")
         # Create the job with processed data
-        job = Job.objects.create(
-            title=analysis.get("title", ""),
-            company_name=analysis.get("company", {}).get("name", ""),
-            description=analysis.get("job_description", ""),
-            location=analysis.get("location", ""),
-            employment_type=analysis.get("employment_type", ""),
-            source_url=input_data,
-            required_skills=required_skills,
-            preferred_skills=preferred_skills,
-            years_of_experience=years_exp,
-            education=analysis.get("education"),
-            created_by=self.user,
-        )
+        job = {
+            "title": analysis.get("title", ""),
+            "company_name": analysis.get("company", {}).get("name", ""),
+            "description": analysis.get("job_description", ""),
+            "location": analysis.get("location", ""),
+            "employment_type": analysis.get("employment_type", ""),
+            "source_url": input_data,
+            "required_skills": required_skills,
+            "preferred_skills": preferred_skills,
+            "years_of_experience": years_exp,
+            "education": analysis.get("education"),
+            "created_by": self.user,
+        }
 
         return job
 
