@@ -1,7 +1,11 @@
+import requests as http_requests
+
 # Python standard library
 import asyncio
 import io
 import re
+from google.oauth2 import id_token
+from google.auth.transport import requests
 
 # Django imports
 from django.conf import settings
@@ -573,6 +577,7 @@ class JobAnalysisView(APIView):
 
 
 class CheckEmailRegisteredView(APIView):
+
     def post(self, request):
         email = request.data.get("email")
 
@@ -580,6 +585,18 @@ class CheckEmailRegisteredView(APIView):
             return Response(
                 {"error": "Email field is required."},
                 status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if Recruiter.objects.filter(email=email).exists():
+            user = Recruiter.objects.get(email=email)
+            refresh = RefreshToken.for_user(user)
+            return Response(
+                {
+                    "message": "Email is registered",
+                    "access": str(refresh.access_token),
+                    "refresh": str(refresh),
+                },
+                status=status.HTTP_200_OK,
             )
 
         if Recruiter.objects.filter(email=email).exists():
@@ -948,7 +965,9 @@ class ShortlistViewSet(viewsets.ViewSet):
     def get_shortlisted(self, request, pk=None):
         try:
             self.get_job(pk)
-            shortlists = Shortlist.objects.filter(job_id=pk)
+            shortlists = Shortlist.objects.filter(job_id=pk).select_related(
+                "resume__candidate"
+            )  # Added select_related for efficient querying
             serializer = ShortlistSerializer(shortlists, many=True)
             return Response(serializer.data, status=status.HTTP_200_OK)
         except Exception as e:
@@ -1183,4 +1202,129 @@ class LogoutView(APIView):
         except Exception as e:
             return Response(
                 {"error": "Failed to logout."}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+
+class GoogleAuthView(APIView):
+    def post(self, request):
+        access_token = request.data.get("access_token")
+
+        if not access_token:
+            return Response(
+                {"error": "Access token is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            google_response = http_requests.get(
+                "https://www.googleapis.com/oauth2/v3/userinfo",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+
+            if not google_response.ok:
+                return Response(
+                    {"error": "Failed to verify token"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            user_info = google_response.json()
+            email = user_info["email"]
+            is_new_user = False
+
+            try:
+                user = Recruiter.objects.get(email=email)
+            except Recruiter.DoesNotExist:
+                user = Recruiter.objects.create(
+                    email=email,
+                    first_name=user_info.get("given_name", ""),
+                    last_name=user_info.get("family_name", ""),
+                )
+                is_new_user = True
+
+            refresh = RefreshToken.for_user(user)
+
+            return Response(
+                {
+                    "refresh": str(refresh),
+                    "access": str(refresh.access_token),
+                    "user": RecruiterSerializer(user).data,
+                    "is_new_user": is_new_user,
+                }
+            )
+
+        except Exception as e:
+            print(f"Google auth error: {str(e)}")
+            return Response(
+                {"error": "Authentication failed"}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+
+class UpdateProfileView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def put(self, request):
+        try:
+            user = request.user
+            user.name = request.data.get("name", user.name)
+            user.company = request.data.get("company", user.company)
+            user.save()
+
+            # Generate new tokens
+            refresh = RefreshToken.for_user(user)
+
+            return Response(
+                {
+                    "refresh": str(refresh),
+                    "access": str(refresh.access_token),
+                    "user": RecruiterSerializer(user).data,
+                }
+            )
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class CheckShortlistedStatus(APIView):
+    def get(self, request, resume_id, job_id):
+        try:
+            # Check if the given resume_id and job_id exist in the Shortlist table
+            shortlist = Shortlist.objects.filter(
+                resume_id=resume_id, job_id=job_id
+            ).first()
+
+            if shortlist:
+                # Resume is shortlisted for the job
+                return Response({"shortlisted": True}, status=status.HTTP_200_OK)
+            else:
+                # Resume is not shortlisted for the job
+                return Response({"shortlisted": False}, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            return Response(
+                {"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class UnshortlistResume(APIView):
+    def delete(self, request, resume_id, job_id):
+        try:
+            # Find and delete the shortlist entry
+            shortlist = Shortlist.objects.filter(
+                resume_id=resume_id, job_id=job_id, shortlisted_by=request.user
+            )
+
+            if shortlist.exists():
+                shortlist.delete()
+                return Response(
+                    {"message": "Resume removed from shortlist successfully"},
+                    status=status.HTTP_200_OK,
+                )
+            else:
+                return Response(
+                    {"error": "Resume was not found in shortlist"},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+
+        except Exception as e:
+            return Response(
+                {"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )

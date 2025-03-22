@@ -99,7 +99,15 @@ class ResumeSerializer(serializers.ModelSerializer):
 class ShortlistSerializer(serializers.ModelSerializer):
     class Meta:
         model = Shortlist
-        fields = ["id", "resume_id", "job_id", "shortlisted_by", "shortlisted_at"]
+        fields = [
+            "id",
+            "resume_id",
+            "job_id",
+            "shortlisted_by",
+            "shortlisted_at",
+            "candidate_name",  # Added this field
+            "analysis_data",  # Added analysis_data
+        ]
 
 
 class CandidateSerializer(serializers.ModelSerializer):

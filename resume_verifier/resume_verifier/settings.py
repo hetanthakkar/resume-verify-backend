@@ -11,7 +11,7 @@ SECRET_KEY = "django-insecure-your-secret-key"
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = ["*"]
 
 # Application definition
 INSTALLED_APPS = [
@@ -115,3 +115,6 @@ EMAIL_USE_TLS = True
 EMAIL_HOST_USER = "hetanthakkar3@gmail.com"
 EMAIL_HOST_PASSWORD = "hdso kclk xfwk ouzq"
 EMAIL_FROM_ADDRESS = "hetanthakkar3@gmail.com"
+GOOGLE_CLIENT_ID = (
+    "483886083006-k3ggj8i676gajk3kumb3c04ov8gp45tv.apps.googleusercontent.com"
+)

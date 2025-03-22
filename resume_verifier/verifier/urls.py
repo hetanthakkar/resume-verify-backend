@@ -23,6 +23,10 @@ from .views import (
     RecruiterEmailUpdateRequestView,
     RecruiterEmailUpdateConfirmView,
     LogoutView,
+    GoogleAuthView,
+    UpdateProfileView,
+    CheckShortlistedStatus,
+    UnshortlistResume,
 )
 
 from rest_framework_simplejwt.views import TokenRefreshView
@@ -111,4 +115,16 @@ urlpatterns = [
         name="recruiter-email-update-confirm",
     ),
     path("auth/logout/", LogoutView.as_view(), name="auth_logout"),
+    path("auth/google/", GoogleAuthView.as_view(), name="google-auth"),
+    path("auth/update-profile/", UpdateProfileView.as_view(), name="update-profile"),
+    path(
+        "check_shortlisted/<int:resume_id>/<int:job_id>/",
+        CheckShortlistedStatus.as_view(),
+        name="check_shortlisted_status",
+    ),
+    path(
+        "jobs/<int:job_id>/unshortlist/<int:resume_id>/",
+        UnshortlistResume.as_view(),
+        name="unshortlist-resume",
+    ),
 ]

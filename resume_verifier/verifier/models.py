@@ -188,11 +188,21 @@ class Shortlist(models.Model):
     id = models.AutoField(primary_key=True)
     resume = models.ForeignKey(
         "Resume", on_delete=models.CASCADE, db_column="resume_id"
-    )  # Changed from resume_id
-    job = models.ForeignKey(
-        "Job", on_delete=models.CASCADE, db_column="job_id"
-    )  # Changed from job_id
+    )
+    job = models.ForeignKey("Job", on_delete=models.CASCADE, db_column="job_id")
     shortlisted_by = models.ForeignKey(
         "Recruiter", on_delete=models.CASCADE, db_column="shortlisted_by"
     )
     shortlisted_at = models.DateTimeField(auto_now_add=True)
+
+    @property
+    def candidate_name(self):
+        return self.resume.candidate.name  # Fetch candidate's name from Resume
+
+    @property
+    def analysis_data(self):
+        # Fetch analysis data for the associated resume and job
+        analysis = ResumeAnalysis.objects.filter(
+            resume=self.resume, job=self.job
+        ).first()
+        return analysis.analysis_data if analysis else {}
