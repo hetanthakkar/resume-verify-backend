@@ -1,23 +1,26 @@
-from django.db import models
-
-from django.core.validators import FileExtensionValidator
-
-import uuid
 from django.contrib.auth.models import AbstractUser, BaseUserManager
-from django.core.exceptions import ValidationError
-
-from django.conf import settings
+from django.db import models
+from django.utils import timezone
+from django.core.validators import MinValueValidator, MaxValueValidator
 from django.contrib.postgres.fields import ArrayField
-import json
+from django.core.exceptions import ValidationError
+from django.utils.translation import gettext_lazy as _
 from django.conf import settings
 import random
 from datetime import datetime, timedelta
+import numpy as np
+from django.db.models import F
+from django.db.models.functions import Ln, Exp
+from django.db.models import FloatField
+from django.db.models.functions import Sqrt
+from django.db.models import ExpressionWrapper
+from django.db.models import Q
 
 
-class RecruiterManager(BaseUserManager):
+class UserManager(BaseUserManager):
     def create_user(self, email, password=None, **extra_fields):
         if not email:
-            raise ValueError("The Email field must be set")
+            raise ValueError(_("The Email field must be set"))
         email = self.normalize_email(email)
         user = self.model(email=email, **extra_fields)
         user.set_password(password)
@@ -27,25 +30,115 @@ class RecruiterManager(BaseUserManager):
     def create_superuser(self, email, password=None, **extra_fields):
         extra_fields.setdefault("is_staff", True)
         extra_fields.setdefault("is_superuser", True)
-
         return self.create_user(email, password, **extra_fields)
 
 
-class Recruiter(AbstractUser):
-    username = None
+class User(AbstractUser):
     email = models.EmailField(unique=True)
-    name = models.CharField(max_length=255)
-    company = models.CharField(max_length=255)
-    created_at = models.DateTimeField(auto_now_add=True)
-    groups = None
-    user_permissions = None
-    objects = RecruiterManager()
+    username = models.CharField(max_length=150, unique=True)
+    date_of_birth = models.DateField(null=True, blank=True)
+    latitude = models.FloatField(
+        validators=[MinValueValidator(-90), MaxValueValidator(90)],
+        null=True,
+        blank=True
+    )
+    longitude = models.FloatField(
+        validators=[MinValueValidator(-180), MaxValueValidator(180)],
+        null=True,
+        blank=True
+    )
+    city = models.CharField(max_length=100, null=True, blank=True)
+    company = models.CharField(max_length=100, null=True, blank=True)
+    problem_category = models.CharField(
+        max_length=50,
+        choices=[
+            ('anxiety', 'Anxiety'),
+            ('depression', 'Depression'),
+            ('stress', 'Stress Management'),
+            ('trauma', 'Trauma & PTSD'),
+            ('addiction', 'Addiction & Recovery'),
+            ('selfesteem', 'Self-Esteem'),
+            ('relationships', 'Relationship Issues'),
+            ('grief', 'Grief & Loss'),
+            ('eating', 'Eating & Body Image'),
+            ('sleep', 'Sleep Issues'),
+            ('focus', 'Attention & Focus'),
+            ('isolation', 'Loneliness & Isolation'),
+            ('identity', 'Identity & Purpose'),
+            ('other', 'Other'),
+        ],
+        null=True,
+        blank=True
+    )
+    pinecone_id = models.CharField(max_length=255, null=True, blank=True, unique=True)
+    objects = UserManager()
 
     USERNAME_FIELD = "email"
-    REQUIRED_FIELDS = ["name", "company"]
+    REQUIRED_FIELDS = ["username"]
 
     def __str__(self):
-        return f"{self.name} - {self.company}"
+        return self.email
+
+
+class Problem(models.Model):
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='problem')
+    description = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"Problem for {self.user.email}"
+
+
+class Chat(models.Model):
+    from_user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='sent_chats')
+    to_user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='received_chats')
+    content = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    is_read = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ['created_at']
+
+    def __str__(self):
+        return f"Chat from {self.from_user.email} to {self.to_user.email}"
+
+
+class Match(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='matches')
+    matched_user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='matched_by')
+    similarity_score = models.FloatField(
+        validators=[MinValueValidator(0.0), MaxValueValidator(1.0)]
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    last_interaction = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        unique_together = ['user', 'matched_user']
+        ordering = ['-similarity_score']
+
+    def __str__(self):
+        return f"Match between {self.user.email} and {self.matched_user.email}"
+
+    def clean(self):
+        if self.user == self.matched_user:
+            raise ValidationError("A user cannot match with themselves")
+
+    @classmethod
+    def get_matches_for_user(cls, user, limit=10):
+        """Get top matches for a user, ordered by similarity score."""
+        return cls.objects.filter(
+            user=user
+        ).select_related('matched_user').order_by('-similarity_score')[:limit]
+
+    @classmethod
+    def get_mutual_matches(cls, user):
+        """Get users who have matched with each other."""
+        return cls.objects.filter(
+            user=user,
+            matched_user__matches__user=F('matched_user'),
+            matched_user__matches__matched_user=user
+        ).select_related('matched_user')
 
 
 class OTPVerification(models.Model):
@@ -65,144 +158,3 @@ class OTPVerification(models.Model):
         return datetime.now() - timedelta(minutes=10) <= self.created_at.replace(
             tzinfo=None
         )
-
-
-class Job(models.Model):
-    title = models.CharField(max_length=255)
-    company_name = models.CharField(max_length=255)
-    description = models.TextField()
-    location = models.CharField(max_length=255)
-    employment_type = models.CharField(max_length=50)
-    source_url = models.URLField(max_length=500)
-    required_skills = models.JSONField(default=list)  # Store as JSON string
-    preferred_skills = models.JSONField(default=list)  # Store as JSON string
-    years_of_experience = models.IntegerField(null=True, blank=True)
-    education = models.TextField(null=True, blank=True)
-    created_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL, related_name="created_jobs", on_delete=models.CASCADE
-    )
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    # def save(self, *args, **kwargs):
-    #     # Ensure required_skills and preferred_skills are lists
-    #     if self.required_skills is None:
-    #         self.required_skills = []
-    #     if self.preferred_skills is None:
-    #         self.preferred_skills = []
-
-    #     # Convert years_of_experience to int if it's a string
-    #     if (
-    #         isinstance(self.years_of_experience, str)
-    #         and self.years_of_experience.isdigit()
-    #     ):
-    #         self.years_of_experience = int(self.years_of_experience)
-
-    #     super().save(*args, **kwargs)
-
-
-class JobRecruiter(models.Model):
-    STATUS_CHOICES = (
-        ("ACTIVE", "Active"),
-        ("INACTIVE", "Inactive"),
-        ("REMOVED", "Removed"),
-    )
-
-    job = models.ForeignKey(
-        "Job", on_delete=models.CASCADE, related_name="job_recruiters"
-    )
-    recruiter = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
-        related_name="recruited_jobs",
-    )
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="ACTIVE")
-    joined_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        unique_together = ("job", "recruiter")
-        indexes = [
-            models.Index(fields=["job", "recruiter", "status"]),
-        ]
-
-
-class Candidate(models.Model):
-    name = models.CharField(max_length=255)
-    email = models.EmailField(unique=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    def __str__(self):
-        return self.name
-
-
-class Resume(models.Model):
-    candidate = models.ForeignKey(
-        Candidate, on_delete=models.CASCADE, related_name="resumes"
-    )
-    pdf_file = models.FileField(
-        upload_to="resumes/",
-        validators=[FileExtensionValidator(allowed_extensions=["pdf"])],
-    )
-    version = models.IntegerField()
-    upload_date = models.DateTimeField(auto_now_add=True)
-    uploaded_by = models.ForeignKey(
-        Recruiter, on_delete=models.SET_NULL, null=True, related_name="uploaded_resumes"
-    )
-
-    class Meta:
-        unique_together = ["candidate", "version"]
-
-    def __str__(self):
-        return f"{self.candidate.name}'s Resume v{self.version}"
-
-
-class ResumeAnalysis(models.Model):
-    resume = models.ForeignKey(
-        Resume, on_delete=models.CASCADE, related_name="analyses"
-    )
-    job = models.ForeignKey(
-        Job, on_delete=models.CASCADE, related_name="resume_analyses"
-    )
-    linkedin_url = models.URLField(blank=True, null=True)
-    analysis_data = models.JSONField()
-    analyzed_at = models.DateTimeField(auto_now_add=True)
-    uploaded_by = models.ForeignKey(
-        Recruiter,
-        on_delete=models.SET_NULL,
-        null=True,
-        related_name="uploaded_analyses",
-    )
-    candidate_id = models.ForeignKey(
-        Candidate, on_delete=models.CASCADE, related_name="analyses"
-    )
-
-    class Meta:
-        unique_together = ["resume", "job"]
-
-    def __str__(self):
-        return f"Analysis for {self.resume.candidate.name} - {self.job.title}"
-
-
-class Shortlist(models.Model):
-    id = models.AutoField(primary_key=True)
-    resume = models.ForeignKey(
-        "Resume", on_delete=models.CASCADE, db_column="resume_id"
-    )
-    job = models.ForeignKey("Job", on_delete=models.CASCADE, db_column="job_id")
-    shortlisted_by = models.ForeignKey(
-        "Recruiter", on_delete=models.CASCADE, db_column="shortlisted_by"
-    )
-    shortlisted_at = models.DateTimeField(auto_now_add=True)
-
-    @property
-    def candidate_name(self):
-        return self.resume.candidate.name  # Fetch candidate's name from Resume
-
-    @property
-    def analysis_data(self):
-        # Fetch analysis data for the associated resume and job
-        analysis = ResumeAnalysis.objects.filter(
-            resume=self.resume, job=self.job
-        ).first()
-        return analysis.analysis_data if analysis else {}

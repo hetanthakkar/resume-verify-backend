@@ -91,10 +91,10 @@ MEDIA_URL = "/media/"
 MEDIA_ROOT = os.path.join(BASE_DIR, "media")
 
 # API Keys
-OPENAI_API_KEY = "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"
+OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
 GITHUB_TOKEN = "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"
 API_HUB_KEY = "ec2fc77d-4dc8-4939-8d11-96854f75a6c3"
-AUTH_USER_MODEL = "verifier.Recruiter"
+AUTH_USER_MODEL = "verifier.User"
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
         "rest_framework_simplejwt.authentication.JWTAuthentication",
@@ -103,18 +103,32 @@ REST_FRAMEWORK = {
 
 CLAUDE_API_KEY = "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"
 SIMPLE_JWT = {
-    "ACCESS_TOKEN_LIFETIME": timedelta(hours=1),
-    "REFRESH_TOKEN_LIFETIME": timedelta(days=1),
+    "ACCESS_TOKEN_LIFETIME": timedelta(days=1),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
+    "ROTATE_REFRESH_TOKENS": True,
+    "BLACKLIST_AFTER_ROTATION": True,
+    "UPDATE_LAST_LOGIN": True,
+    "ALGORITHM": "HS256",
+    "SIGNING_KEY": SECRET_KEY,
+    "AUTH_HEADER_TYPES": ("Bearer",),
+    "AUTH_HEADER_NAME": "HTTP_AUTHORIZATION",
+    "USER_ID_FIELD": "id",
+    "USER_ID_CLAIM": "user_id",
 }
 APPEND_SLASH = False
 # Email settings
 EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
-EMAIL_HOST = "smtp.gmail.com"  # Or your email provider
+EMAIL_HOST = "smtp.gmail.com"
 EMAIL_PORT = 587
 EMAIL_USE_TLS = True
 EMAIL_HOST_USER = "hetanthakkar3@gmail.com"
 EMAIL_HOST_PASSWORD = "hdso kclk xfwk ouzq"
 EMAIL_FROM_ADDRESS = "hetanthakkar3@gmail.com"
+
 GOOGLE_CLIENT_ID = (
     "483886083006-k3ggj8i676gajk3kumb3c04ov8gp45tv.apps.googleusercontent.com"
 )
+
+# Pinecone Settings
+PINECONE_API_KEY = os.environ.get('PINECONE_API_KEY')
+PINECONE_INDEX_NAME = "mental-test"

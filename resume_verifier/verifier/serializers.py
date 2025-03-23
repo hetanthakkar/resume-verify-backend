@@ -1,36 +1,79 @@
 from rest_framework import serializers
-from django.contrib.auth import authenticate
+from django.contrib.auth import get_user_model, authenticate
 from .models import (
-    Recruiter,
-    Job,
-    JobRecruiter,
-    Shortlist,
-    Resume,
-    Candidate,
+    User,
     OTPVerification,
+    Problem,
+    Match,
+    Chat,
 )
-
-
-from rest_framework import serializers
 from django.core.mail import send_mail
 from django.conf import settings
+import random
+from django.utils import timezone
+
+User = get_user_model()
 
 
 class RegisterSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True)
+    problem_category = serializers.CharField(required=False)
+    problem_description = serializers.CharField(required=False)
 
     class Meta:
-        model = Recruiter
-        fields = ("email", "password", "name", "company")
+        model = User
+        fields = ("id", "email", "username", "password", "problem_category", "problem_description")
+        read_only_fields = ("id",)
 
     def create(self, validated_data):
-        recruiter = Recruiter.objects.create_user(
+        # Generate OTP
+        otp = "".join([str(random.randint(0, 9)) for _ in range(6)])
+        
+        # Create user as inactive
+        user = User.objects.create_user(
             email=validated_data["email"],
+            username=validated_data["username"],
             password=validated_data["password"],
-            name=validated_data["name"],
-            company=validated_data["company"],
+            is_active=False,  # User starts as inactive
+            problem_category=validated_data.get("problem_category")  # Set problem category
         )
-        return recruiter
+        
+        # Create Problem instance if description is provided
+        if validated_data.get("problem_description"):
+            Problem.objects.create(
+                user=user,
+                description=validated_data["problem_description"]
+            )
+        
+        # Store registration data and OTP
+        registration_data = {
+            "email": validated_data["email"],
+            "username": validated_data["username"],
+            "password": validated_data["password"],
+            "problem_category": validated_data.get("problem_category", ""),
+            "problem_description": validated_data.get("problem_description", ""),
+        }
+        
+        OTPVerification.objects.create(
+            email=validated_data["email"],
+            otp=otp,
+            registration_data=registration_data
+        )
+        
+        # Send verification email
+        subject = "Email Verification"
+        message = f"Your verification code is: {otp}"
+        from_email = settings.EMAIL_FROM_ADDRESS
+        recipient_list = [validated_data["email"]]
+        
+        try:
+            send_mail(subject, message, from_email, recipient_list)
+        except Exception as e:
+            # If email sending fails, delete the user and OTP verification
+            user.delete()
+            raise serializers.ValidationError({"email": "Failed to send verification email"})
+        
+        return user
 
 
 class LoginSerializer(serializers.Serializer):
@@ -44,111 +87,48 @@ class LoginSerializer(serializers.Serializer):
         raise serializers.ValidationError("Incorrect credentials")
 
 
-class RecruiterSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Recruiter
-        fields = ["id", "name", "email", "company"]
-
-
-from rest_framework import serializers
-
-
-class JobSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Job
-        fields = [
-            "id",
-            "title",
-            "company_name",
-            "description",
-            "location",
-            "employment_type",
-            "source_url",
-            "required_skills",
-            "preferred_skills",
-            "years_of_experience",
-            "education",
-            "created_by",
-            "created_at",
-            "updated_at",
-        ]
-        read_only_fields = ["created_by", "created_at", "updated_at"]
-
-
-class JobRecruiterSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = JobRecruiter
-        fields = ["id", "job", "recruiter", "status", "joined_at", "updated_at"]
-        read_only_fields = ["joined_at", "updated_at"]
-
-
-class CandidateSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Candidate
-        fields = ["id", "name", "email"]
-
-
-class ResumeSerializer(serializers.ModelSerializer):
-    candidate = CandidateSerializer()
+class UserSerializer(serializers.ModelSerializer):
+    problem = serializers.SerializerMethodField()
 
     class Meta:
-        model = Resume
-        fields = ["id", "candidate", "version", "upload_date"]
+        model = User
+        fields = ('id', 'email', 'username', 'date_of_birth', 
+                 'latitude', 'longitude', 'city', 'company', 'problem_category', 
+                 'problem')
+        read_only_fields = ('id',)
+
+    def get_problem(self, obj):
+        try:
+            problem = obj.problem
+            return {
+                'description': problem.description,
+                'created_at': problem.created_at,
+                'updated_at': problem.updated_at
+            }
+        except Problem.DoesNotExist:
+            return None
 
 
-class ShortlistSerializer(serializers.ModelSerializer):
+class ProblemSerializer(serializers.ModelSerializer):
     class Meta:
-        model = Shortlist
-        fields = [
-            "id",
-            "resume_id",
-            "job_id",
-            "shortlisted_by",
-            "shortlisted_at",
-            "candidate_name",  # Added this field
-            "analysis_data",  # Added analysis_data
-        ]
+        model = Problem
+        fields = ('id', 'description', 'created_at', 'updated_at')
+        read_only_fields = ('id', 'created_at', 'updated_at')
 
 
-class CandidateSerializer(serializers.ModelSerializer):
+class MatchSerializer(serializers.ModelSerializer):
+    matched_user = UserSerializer(read_only=True)
+
     class Meta:
-        model = Candidate
-        fields = ["id", "name", "email", "created_at"]
-
-
-class ResumeVersionSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Resume
-        fields = ["id", "version", "pdf_file", "upload_date", "uploaded_by"]
-
-
-class RegisterSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Recruiter
-        fields = ("email", "password", "name", "company")
-        extra_kwargs = {"password": {"write_only": True}}
-
-    def create(self, validated_data):
-        if "registration_data" in self.context:
-            user = Recruiter.objects.create_user(**validated_data)
-            return user
-        verification = OTPVerification.generate_otp(validated_data["email"])
-        verification.registration_data = validated_data
-        verification.save()
-
-        send_mail(
-            "Email Verification Code",
-            f"Your verification code is: {verification.otp}",
-            settings.EMAIL_FROM_ADDRESS,
-            [validated_data["email"]],
-            fail_silently=False,
-        )
-        return verification
+        model = Match
+        fields = ('id', 'matched_user', 'similarity_score', 
+                 'created_at', 'last_interaction')
+        read_only_fields = ('id', 'created_at', 'last_interaction')
 
 
 class VerifyOTPSerializer(serializers.Serializer):
     email = serializers.EmailField()
-    otp = serializers.CharField()
+    otp = serializers.CharField(max_length=6)
 
 
 class ForgotPasswordSerializer(serializers.Serializer):
@@ -157,8 +137,8 @@ class ForgotPasswordSerializer(serializers.Serializer):
 
 class ResetPasswordSerializer(serializers.Serializer):
     email = serializers.EmailField()
-    otp = serializers.CharField()
-    new_password = serializers.CharField(write_only=True)
+    otp = serializers.CharField(max_length=6)
+    new_password = serializers.CharField(min_length=8)
 
     def validate(self, data):
         try:
@@ -172,32 +152,56 @@ class ResetPasswordSerializer(serializers.Serializer):
             raise serializers.ValidationError("Invalid OTP")
 
 
-class RecruiterProfileUpdateSerializer(serializers.ModelSerializer):
+class ProfileUpdateSerializer(serializers.ModelSerializer):
     class Meta:
-        model = Recruiter
-        fields = ["name", "company"]
+        model = User
+        fields = ['username', 'date_of_birth', 'latitude', 'longitude', 'city', 'company', 'problem_category']
 
 
-class RecruiterEmailUpdateRequestSerializer(serializers.Serializer):
-    new_email = serializers.EmailField()
+class ChatSerializer(serializers.ModelSerializer):
+    from_user = UserSerializer(read_only=True)
+    to_user = UserSerializer(read_only=True)
 
-    def validate_new_email(self, value):
-        if Recruiter.objects.filter(email=value).exists():
-            raise serializers.ValidationError("This email is already in use.")
-        return value
+    class Meta:
+        model = Chat
+        fields = ('id', 'from_user', 'to_user', 'content', 'created_at', 'is_read')
+        read_only_fields = ('id', 'created_at')
 
 
-class RecruiterEmailUpdateConfirmSerializer(serializers.Serializer):
-    new_email = serializers.EmailField()
+class ChatListSerializer(serializers.ModelSerializer):
+    other_user = serializers.SerializerMethodField()
+    last_message = serializers.SerializerMethodField()
+    unread_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Chat
+        fields = ('id', 'other_user', 'last_message', 'created_at', 'unread_count')
+
+    def get_other_user(self, obj):
+        request = self.context.get('request')
+        if obj.from_user == request.user:
+            return UserSerializer(obj.to_user).data
+        return UserSerializer(obj.from_user).data
+
+    def get_last_message(self, obj):
+        return obj.content
+
+    def get_unread_count(self, obj):
+        request = self.context.get('request')
+        if obj.to_user == request.user:
+            return Chat.objects.filter(
+                from_user=obj.from_user,
+                to_user=request.user,
+                is_read=False
+            ).count()
+        return 0
+
+
+class EmailUpdateSerializer(serializers.Serializer):
+    email = serializers.EmailField()
     otp = serializers.CharField(max_length=6)
 
-    def validate(self, data):
-        try:
-            verification = OTPVerification.objects.get(
-                email=data["new_email"], otp=data["otp"], is_verified=False
-            )
-            if not verification.is_valid():
-                raise serializers.ValidationError("OTP has expired")
-            return data
-        except OTPVerification.DoesNotExist:
-            raise serializers.ValidationError("Invalid OTP")
+    def validate_email(self, value):
+        if User.objects.filter(email=value).exists():
+            raise serializers.ValidationError("This email is already registered.")
+        return value
