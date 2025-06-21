@@ -28,6 +28,7 @@ httpcore==1.0.7
 httpx==0.28.1
 idna==3.10
 jiter==0.8.2
+<<<<<<< HEAD
 jmespath==1.0.1
 multidict==6.1.0
 numpy==2.2.1
@@ -41,6 +42,9 @@ pyasn1==0.6.1
 pyasn1_modules==0.4.1
 pycparser==2.22
 pycryptodome==3.21.0
+=======
+google-generativeai==0.8.3
+>>>>>>> a874d34 (Replace OpenAI/Claude APIs with Gemini API and fix various issues)
 pydantic==2.10.4
 pydantic_core==2.27.2
 pyee==12.0.0

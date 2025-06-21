@@ -57,8 +57,8 @@ TEMPLATES = [
 WSGI_APPLICATION = "resume_verifier.wsgi.application"
 DATABASES = {
     "default": {
-        "ENGINE": "django.db.backends.postgresql",
-        "NAME": "resume_verifier",
+        "ENGINE": "django.db.backends.sqlite3",
+        "NAME": BASE_DIR / "db.sqlite3",
     }
 }
 
@@ -91,17 +91,22 @@ MEDIA_URL = "/media/"
 MEDIA_ROOT = os.path.join(BASE_DIR, "media")
 
 # API Keys
+<<<<<<< HEAD
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
 GITHUB_TOKEN = "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"
 API_HUB_KEY = "ec2fc77d-4dc8-4939-8d11-96854f75a6c3"
 AUTH_USER_MODEL = "verifier.User"
+=======
+GEMINI_API_KEY = "AIzaSyD1bV6aTC3Sd9xyc1Th66Zf2m-fdyWVJ5I"
+GITHUB_TOKEN = "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"
+AUTH_USER_MODEL = "verifier.Recruiter"
+>>>>>>> a874d34 (Replace OpenAI/Claude APIs with Gemini API and fix various issues)
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
         "rest_framework_simplejwt.authentication.JWTAuthentication",
     ),
 }
 
-CLAUDE_API_KEY = "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"
 SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(days=1),
     "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
